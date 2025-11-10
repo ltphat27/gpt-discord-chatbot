@@ -1,0 +1,8 @@
+discord.py==2.1.*
+python-dotenv==0.21.*
+openai
+httpx==0.24.1
+httpcore==0.17.3
+PyYAML==6.0
+dacite==1.6.*
+Flask==3.0.3
