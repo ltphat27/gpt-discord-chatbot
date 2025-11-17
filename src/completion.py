@@ -5,27 +5,19 @@ from openai import AsyncOpenAI
 import os
 import asyncio
 
-from src.moderation import moderate_message
 from typing import Optional, List
 from src.constants import (
-    BOT_INSTRUCTIONS,
     BOT_NAME,
     EXAMPLE_CONVOS,
 )
+
 import discord
-from src.base import Message, Prompt, Conversation, ThreadConfig
 from src.utils import split_into_shorter_messages, close_thread, logger
-from src.moderation import (
-    send_moderation_flagged_message,
-    send_moderation_blocked_message,
-)
+
+from src.constants import BOT_INSTRUCTIONS
 
 MY_BOT_NAME = BOT_NAME
 MY_BOT_EXAMPLE_CONVOS = EXAMPLE_CONVOS
-
-ASSISTANT_ID = os.environ.get("OPENAI_ASSISTANT_ID")
-if not ASSISTANT_ID:
-    logger.error("OPENAI_ASSISTANT_ID environment variable not set.")
 
 POLL_INTERVAL_S = 0.5
 
@@ -46,7 +38,20 @@ class CompletionData:
     status_text: Optional[str]
 
 
-client = AsyncOpenAI()
+client = AsyncOpenAI(
+    api_key=os.environ["OPENAI_API_KEY"],
+    base_url='https://compass.llm.shopee.io/compass-api/v1',
+)
+
+
+def format_results(results):
+    formatted_results = ''
+    for result in results.data:
+        formatted_result = f"<result file_id='{result.file_id}' file_name='{result.filename}'>"
+        for part in result.content:
+            formatted_result += f"<content>{part.text}</content>"
+        formatted_results += formatted_result + "</result>"
+    return f"<sources>{formatted_results}</sources>"
 
 # chat with the assistant
 
@@ -57,101 +62,56 @@ async def generate_completion_response(
     user: str,
 ) -> CompletionData:
 
-    if not ASSISTANT_ID:
-        return CompletionData(
-            status=CompletionResult.OTHER_ERROR,
-            reply_text=None,
-            status_text="Error: OPENAI_ASSISTANT_ID is not config.",
-        )
-
     try:
-        # add the user's message to the thread
-        await client.beta.threads.messages.create(
-            thread_id=openai_thread_id,
-            role="user",
-            content=last_user_message
+        vector_stores = await client.vector_stores.list(
+            limit=1,
+            order="desc"
         )
 
-        # create a run to run the assistant
-        run = await client.beta.threads.runs.create(
-            thread_id=openai_thread_id,
-            assistant_id=ASSISTANT_ID,
-        )
-
-        # wait for the run to complete
-        while run.status in ["queued", "in_progress"]:
-            await asyncio.sleep(POLL_INTERVAL_S)
-            run = await client.beta.threads.runs.retrieve(
-                thread_id=openai_thread_id,
-                run_id=run.id
-            )
-
-        # check the final status of the run
-        if run.status == "completed":
-            # get the latest message from the thread
-            messages = await client.beta.threads.messages.list(
-                thread_id=openai_thread_id,
-                order="desc",
-                limit=1
-            )
-
-            reply = ""
-            if messages.data and messages.data[0].role == "assistant":
-                for content_part in messages.data[0].content:
-                    if content_part.type == "text":
-                        reply += content_part.text.value
-
-            reply = reply.strip()
-
-            if not reply:
-                # return OK but no text, main.py will handle it
-                return CompletionData(
-                    status=CompletionResult.OK, reply_text=None, status_text="Assistant did not return a text message."
-                )
-
-            # moderate the response
-            moderate_context = (last_user_message + reply)[-500:]
-            flagged_str, blocked_str = moderate_message(
-                message=moderate_context, user=user
-            )
-
-            if len(blocked_str) > 0:
-                return CompletionData(
-                    status=CompletionResult.MODERATION_BLOCKED,
-                    reply_text=reply,
-                    status_text=f"from_response:{blocked_str}",
-                )
-
-            if len(flagged_str) > 0:
-                return CompletionData(
-                    status=CompletionResult.MODERATION_FLAGGED,
-                    reply_text=reply,
-                    status_text=f"from_response:{flagged_str}",
-                )
-
-            # All OK
-            return CompletionData(
-                status=CompletionResult.OK, reply_text=reply, status_text=None
-            )
-
-        # handle the error status of the run
-        elif run.status == "failed":
-            error_message = run.last_error.message if run.last_error else "Unknown error"
-            logger.error(
-                f"Run failed for thread {openai_thread_id}: {error_message}")
+        if not vector_stores.data:
             return CompletionData(
                 status=CompletionResult.OTHER_ERROR,
                 reply_text=None,
-                status_text=f"Run failed: {error_message}",
+                status_text="Error: Không tìm thấy Vector Store nào.",
             )
-        else:
-            # handle the unhandled status of the run
-            logger.error(f"Run ended with unhandled status: {run.status}")
+
+        vector_store_id = vector_stores.data[0].id
+        user_query = last_user_message
+
+        results = await client.vector_stores.search(
+            vector_store_id=vector_store_id,
+            query=user_query,
+        )
+
+        formatted_results = format_results(results)
+
+        system_prompt = BOT_INSTRUCTIONS
+
+        completion = await client.chat.completions.create(
+            model="compass-max",
+            messages=[
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": f"Sources: {formatted_results}\n\nQuery: '{user_query}'"
+                }
+            ],
+        )
+
+        reply = completion.choices[0].message.content
+        reply = reply.strip()
+
+        if not reply:
             return CompletionData(
-                status=CompletionResult.OTHER_ERROR,
-                reply_text=None,
-                status_text=f"Run ended with status: {run.status}",
+                status=CompletionResult.OK, reply_text=None, status_text="Assistant did not return a text message."
             )
+
+        return CompletionData(
+            status=CompletionResult.OK, reply_text=reply, status_text=None
+        )
 
     except openai.BadRequestError as e:
         logger.exception(e)
@@ -187,13 +147,6 @@ async def process_response(
             for r in shorter_response:
                 sent_message = await thread.send(r)
         if status is CompletionResult.MODERATION_FLAGGED:
-            await send_moderation_flagged_message(
-                guild=thread.guild,
-                user=user,
-                flagged_str=status_text,
-                message=reply_text,
-                url=sent_message.jump_url if sent_message else "no url",
-            )
 
             await thread.send(
                 embed=discord.Embed(
@@ -202,12 +155,6 @@ async def process_response(
                 )
             )
     elif status is CompletionResult.MODERATION_BLOCKED:
-        await send_moderation_blocked_message(
-            guild=thread.guild,
-            user=user,
-            blocked_str=status_text,
-            message=reply_text,
-        )
 
         await thread.send(
             embed=discord.Embed(
@@ -215,6 +162,7 @@ async def process_response(
                 color=discord.Color.red(),
             )
         )
+
     elif status is CompletionResult.TOO_LONG:
         await close_thread(thread)
     elif status is CompletionResult.INVALID_REQUEST:

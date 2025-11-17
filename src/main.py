@@ -22,18 +22,12 @@ from src.utils import (
     split_into_shorter_messages,
 )
 from src import completion
-from src.completion import generate_completion_response, process_response, client as openai_client  # Import client
-from src.moderation import (
-    moderate_message,
-    send_moderation_blocked_message,
-    send_moderation_flagged_message,
-)
-
-from src.moderation import (
-    moderate_message,
-    send_moderation_blocked_message,
-    send_moderation_flagged_message,
-)
+from src.completion import generate_completion_response, process_response, client as openai_client
+# from src.moderation import (
+#     moderate_message,
+#     send_moderation_blocked_message,
+#     send_moderation_flagged_message,
+# )
 
 import os
 from flask import Flask
@@ -62,118 +56,9 @@ async def on_ready():
 
     await tree.sync()
 
-
-@tree.command(name="chat", description="Create a new thread for conversation")
-@discord.app_commands.checks.has_permissions(send_messages=True)
-@discord.app_commands.checks.has_permissions(view_channel=True)
-@discord.app_commands.checks.bot_has_permissions(send_messages=True)
-@discord.app_commands.checks.bot_has_permissions(view_channel=True)
-@discord.app_commands.checks.bot_has_permissions(manage_threads=True)
-@app_commands.describe(message="The first prompt to start the chat with")
-async def chat_command(
-    int: discord.Interaction,
-    message: str,
-):
-    try:
-        # only support creating thread in text channel
-        if not isinstance(int.channel, discord.TextChannel):
-            return
-
-        # block servers not in allow list
-        if should_block(guild=int.guild):
-            return
-
-        user = int.user
-        logger.info(f"Chat command by {user} {message[:20]}")
-
-        try:
-            # moderate the message
-            flagged_str, blocked_str = moderate_message(
-                message=message, user=user)
-            await send_moderation_blocked_message(
-                guild=int.guild,
-                user=user,
-                blocked_str=blocked_str,
-                message=message,
-            )
-            if len(blocked_str) > 0:
-                # message was blocked
-                await int.response.send_message(
-                    f"Your prompt has been blocked by moderation.\n{message}",
-                    ephemeral=True,
-                )
-                return
-
-            embed = discord.Embed(
-                description=f"<@{user.id}> wants to chat! 🤖💬",
-                color=discord.Color.green(),
-            )
-
-            embed.add_field(name=user.name, value=message)
-
-            if len(flagged_str) > 0:
-                # message was flagged
-                embed.color = discord.Color.yellow()
-                embed.title = "⚠️ This prompt was flagged by moderation."
-
-            await int.response.send_message(embed=embed)
-            response = await int.original_response()
-
-            await send_moderation_flagged_message(
-                guild=int.guild,
-                user=user,
-                flagged_str=flagged_str,
-                message=message,
-                url=response.jump_url,
-            )
-        except Exception as e:
-            logger.exception(e)
-            await int.response.send_message(
-                f"Failed to start chat {str(e)}", ephemeral=True
-            )
-            return
-
-        # create the discord thread
-        thread = await response.create_thread(
-            name=f"{ACTIVATE_THREAD_PREFX} {user.name[:20]} - {message[:30]}",
-            slowmode_delay=1,
-            reason="gpt-bot",
-            auto_archive_duration=60,
-        )
-
-        # create a new openai thread
-        try:
-            new_openai_thread = await openai_client.beta.threads.create()
-        except Exception as e:
-            logger.exception("Failed to create OpenAI thread.")
-            await thread.send(f"Bot lỗi: Không thể tạo luồng OpenAI. {str(e)}")
-            return
-
-        # save the link
-        openai_thread_mapping[thread.id] = new_openai_thread.id
-        logger.info(
-            f"Created new OpenAI thread {new_openai_thread.id} for Discord thread {thread.id}")
-
-        async with thread.typing():
-            # fetch completion
-            response_data = await generate_completion_response(
-                openai_thread_id=new_openai_thread.id,
-                last_user_message=message,
-                user=user
-            )
-
-            # send the result
-            await process_response(
-                user=user, thread=thread, response_data=response_data
-            )
-    except Exception as e:
-        logger.exception(e)
-        await int.response.send_message(
-            f"Failed to start chat {str(e)}", ephemeral=True
-        )
-
-
 # handle when bot is mentioned
+
+
 async def handle_mention_message(message: DiscordMessage):
     try:
         # Remove the bot mention from the message content
@@ -192,43 +77,6 @@ async def handle_mention_message(message: DiscordMessage):
             )
             return
 
-        # moderate the message
-        flagged_str, blocked_str = moderate_message(
-            message=content, user=message.author
-        )
-        await send_moderation_blocked_message(
-            guild=message.guild,
-            user=message.author,
-            blocked_str=blocked_str,
-            message=content,
-        )
-        if len(blocked_str) > 0:
-            await message.channel.send(
-                embed=discord.Embed(
-                    description=f"❌ **{message.author.mention}'s message has been blocked by moderation.**",
-                    color=discord.Color.red(),
-                ),
-                reference=message
-            )
-            return
-
-        await send_moderation_flagged_message(
-            guild=message.guild,
-            user=message.author,
-            flagged_str=flagged_str,
-            message=content,
-            url=message.jump_url,
-        )
-
-        if len(flagged_str) > 0:
-            await message.channel.send(
-                embed=discord.Embed(
-                    description=f"⚠️ **{message.author.mention}'s message has been flagged by moderation.**",
-                    color=discord.Color.yellow(),
-                ),
-                reference=message
-            )
-
         # Show typing indicator
         async with message.channel.typing():
 
@@ -237,17 +85,10 @@ async def handle_mention_message(message: DiscordMessage):
             openai_thread_id = user_mention_threads.get(user_id)
 
             if not openai_thread_id:
-                try:
-                    new_thread = await openai_client.beta.threads.create()
-                    openai_thread_id = new_thread.id
-                    user_mention_threads[user_id] = openai_thread_id
-                    logger.info(
-                        f"Created new mention thread {openai_thread_id} for user {user_id}")
-                except Exception as e:
-                    logger.exception(
-                        f"Failed to create OpenAI thread for user {user_id}")
-                    await message.channel.send(f"Bot lỗi: Không thể tạo luồng OpenAI. {str(e)}", reference=message)
-                    return
+                openai_thread_id = user_id
+                user_mention_threads[user_id] = openai_thread_id
+                logger.info(
+                    f"Mapped mention thread for user {user_id}")
 
             # Generate response
             response_data = await generate_completion_response(
@@ -356,49 +197,6 @@ async def on_message(message: DiscordMessage):
             # too many messages, no longer going to reply
             await close_thread(thread=thread)
             return
-
-        # moderate the message
-        flagged_str, blocked_str = moderate_message(
-            message=message.content, user=message.author
-        )
-        await send_moderation_blocked_message(
-            guild=message.guild,
-            user=message.author,
-            blocked_str=blocked_str,
-            message=message.content,
-        )
-        if len(blocked_str) > 0:
-            try:
-                await message.delete()
-                await thread.send(
-                    embed=discord.Embed(
-                        description=f"❌ **{message.author}'s message has been deleted by moderation.**",
-                        color=discord.Color.red(),
-                    )
-                )
-                return
-            except Exception as e:
-                await thread.send(
-                    embed=discord.Embed(
-                        description=f"❌ **{message.author}'s message has been blocked by moderation but could not be deleted. Missing Manage Messages permission in this Channel.**",
-                        color=discord.Color.red(),
-                    )
-                )
-                return
-        await send_moderation_flagged_message(
-            guild=message.guild,
-            user=message.author,
-            flagged_str=flagged_str,
-            message=message.content,
-            url=message.jump_url,
-        )
-        if len(flagged_str) > 0:
-            await thread.send(
-                embed=discord.Embed(
-                    description=f"⚠️ **{message.author}'s message has been flagged by moderation.**",
-                    color=discord.Color.yellow(),
-                )
-            )
 
         # wait a bit in case user has more messages
         if SECONDS_DELAY_RECEIVING_MSG > 0:
