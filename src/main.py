@@ -22,13 +22,7 @@ from src.utils import (
     split_into_shorter_messages,
 )
 from src import completion
-from src.completion import generate_completion_response, process_response, client as openai_client
-# from src.moderation import (
-#     moderate_message,
-#     send_moderation_blocked_message,
-#     send_moderation_flagged_message,
-# )
-
+from src.completion import generate_completion_response, process_response
 import os
 from flask import Flask
 from threading import Thread

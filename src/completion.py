@@ -14,7 +14,7 @@ from src.constants import (
 import discord
 from src.utils import split_into_shorter_messages, close_thread, logger
 
-from src.constants import BOT_INSTRUCTIONS
+from src.constants import BOT_INSTRUCTIONS, DEFAULT_MODEL
 
 MY_BOT_NAME = BOT_NAME
 MY_BOT_EXAMPLE_CONVOS = EXAMPLE_CONVOS
@@ -39,9 +39,12 @@ class CompletionData:
 
 
 client = AsyncOpenAI(
-    api_key=os.environ["OPENAI_API_KEY"],
+    api_key=os.environ["COMPASS_LLM_KEY"],
     base_url='https://compass.llm.shopee.io/compass-api/v1',
 )
+
+default_model = DEFAULT_MODEL
+system_prompt = BOT_INSTRUCTIONS
 
 
 def format_results(results):
@@ -72,7 +75,7 @@ async def generate_completion_response(
             return CompletionData(
                 status=CompletionResult.OTHER_ERROR,
                 reply_text=None,
-                status_text="Error: Không tìm thấy Vector Store nào.",
+                status_text="Error: Could not find any vector store.",
             )
 
         vector_store_id = vector_stores.data[0].id
@@ -85,10 +88,9 @@ async def generate_completion_response(
 
         formatted_results = format_results(results)
 
-        system_prompt = BOT_INSTRUCTIONS
-
         completion = await client.chat.completions.create(
-            model="compass-max",
+            model=default_model,
+            temperature=0.1,
             messages=[
                 {
                     "role": "system",
