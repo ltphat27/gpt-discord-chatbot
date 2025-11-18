@@ -3,7 +3,6 @@ from dataclasses import dataclass
 import openai
 from openai import AsyncOpenAI
 import os
-import asyncio
 
 from typing import Optional, List
 from src.constants import (
