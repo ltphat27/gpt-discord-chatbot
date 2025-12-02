@@ -83,6 +83,8 @@ async def generate_completion_response(
         results = await client.vector_stores.search(
             vector_store_id=vector_store_id,
             query=user_query,
+            max_num_results = 5,
+            rewrite_query= True
         )
 
         formatted_results = format_results(results)
@@ -101,6 +103,12 @@ async def generate_completion_response(
                 }
             ],
         )
+        # --- LOG TOKEN USAGE ---
+        prompt_tokens = completion.usage.prompt_tokens
+        completion_tokens = completion.usage.completion_tokens
+        total_tokens = completion.usage.total_tokens
+
+        print(f"[TOKENS] prompt={prompt_tokens}, completion={completion_tokens}, total={total_tokens}")
 
         reply = completion.choices[0].message.content
         reply = reply.strip()
