@@ -66,7 +66,7 @@ async def generate_completion_response(
 
     try:
         vector_stores = await client.vector_stores.list(
-            limit=1,
+            limit=5,
             order="desc"
         )
 
