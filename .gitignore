@@ -7,3 +7,9 @@ __pycache__/
 # IDE
 .vscode/
 
+# virtual env
+venv/
+.venv/
+
+# logs
+*.log
